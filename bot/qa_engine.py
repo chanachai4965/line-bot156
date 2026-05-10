@@ -10,6 +10,7 @@ import pandas as pd
 
 from .data_loader import load_all_excels, get_contacts_df, get_qa_df
 from .birthday import parse_birth, format_day_month, detect_month_in_query, THAI_MONTHS_FULL
+from .affiliation import search_affiliation
 from .responses import (
     AGE_REFUSALS,
     NOT_FOUND,
@@ -450,6 +451,12 @@ def answer_message(text: str) -> str:
     if qa_ans:
         # กรณีคำตอบมีหลายอันคั่น , (เช่น "159 หมิวคนสวย,แต่จริงๆ 041 ก็สวยครับ")
         return qa_ans.replace(",", "\n")
+
+    # 4.5) ค้นหาตามสังกัด
+aff_result = search_affiliation(text, _contacts_df)
+if aff_result:
+    return aff_result
+
 
     # 5) ค้นในรายชื่อบุคคล
     contact_ans = _search_contacts(text)
