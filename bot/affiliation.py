@@ -1,5 +1,3 @@
-เช่น "บช.น.", "นครบาล" — โมดูลนี้แมตช์ทั้งสองรูปแบบ
-"""
 from __future__ import annotations
 
 import re
