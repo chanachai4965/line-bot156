@@ -453,8 +453,8 @@ def answer_message(text: str) -> str:
         return qa_ans.replace(",", "\n")
 
     # 4.5) ค้นหาตามสังกัด
-aff_result = search_affiliation(text, _contacts_df)
-if aff_result:
+    aff_result = search_affiliation(text, _contacts_df)
+    if aff_result:
     return aff_result
 
 
