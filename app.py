@@ -235,16 +235,51 @@ for i in range(1, 13):
 
 
 def parse_month_token(token: str):
-    """แปลง 'มกราคม'/'ม.ค.'/'1' → 1-12 หรือ None"""
+    """
+    แปลงคำที่อ้างอิงเดือน → 1-12 หรือ None
+    รองรับ:
+    - ชื่อเต็ม: 'มกราคม'
+    - ตัวย่อ: 'ม.ค.' / 'ม.ค' / 'มค' / 'ม. ค.' (มีช่องว่างระหว่างจุดก็ได้)
+    - ตัวเลข: '1' / '01' / '5'
+    - ชื่อเดือนไม่ครบสมบูรณ์: 'พฤษภา' / 'มกรา' / 'ตุลา' (≥4 ตัวอักษร, ไม่กำกวม)
+    """
     if not token:
         return None
+
     t = token.strip().lower()
+    if not t:
+        return None
+
+    # 1) ตรงเป๊ะ
     if t in THAI_MONTH_MAP:
         return THAI_MONTH_MAP[t]
-    # ลองตัด . ออก
+
+    # 2) ตัด . ออก
     t2 = t.replace(".", "")
     if t2 in THAI_MONTH_MAP:
         return THAI_MONTH_MAP[t2]
+
+    # 3) ตัดทั้ง . และ space ออก (รองรับ 'ม. ค.', 'พ . ค .' ฯลฯ)
+    t3 = re.sub(r"[.\s\-_/]+", "", t2)
+    if t3 in THAI_MONTH_MAP:
+        return THAI_MONTH_MAP[t3]
+    # ลอง map key หลังตัด . space ด้วย (เผื่อ key เป็นชื่อเต็ม)
+    if t3:
+        for k, v in THAI_MONTH_MAP.items():
+            k_clean = re.sub(r"[.\s\-_/]+", "", k)
+            if k_clean == t3:
+                return v
+
+    # 4) ชื่อเดือนไม่สมบูรณ์: prefix-match กับชื่อเต็มไทย (≥4 ตัวอักษร, ไม่กำกวม)
+    if len(t3) >= 4:
+        candidates = []
+        for i in range(1, 13):
+            full_clean = re.sub(r"[.\s]+", "", THAI_MONTHS_FULL[i]).lower()
+            if full_clean.startswith(t3):
+                candidates.append(i)
+        if len(candidates) == 1:
+            return candidates[0]
+
     return None
 
 
@@ -273,15 +308,20 @@ def parse_birthday_query(query: str):
     """
     คืนค่า (day, month, is_today) ถ้าเป็นคำค้นวันเกิด
     หรือคืน None ถ้าไม่ใช่
+
+    หมายเหตุ: bare-token ที่เป็น "เลขล้วน" จะไม่ถือว่าเป็นชื่อเดือน
+    (เช่น "5" คือเลขที่ของคนคนหนึ่ง ไม่ใช่ "เดือนพฤษภาคม")
+    ผู้ใช้ต้องระบุบริบทชัดเจน เช่น "เดือน 5" หรือ "เกิด 5 มกราคม" จึงจะตีความเป็นวันเกิด
     """
     q = query.strip()
     if not q:
         return None
 
-    # เช็คเป็นชื่อเดือนล้วนๆ ก่อน
-    m_only = parse_month_token(q)
-    if m_only:
-        return (None, m_only, False)
+    # เช็คเป็นชื่อเดือนไทยล้วนๆ ก่อน (ห้าม bare digit เป็นเดือน)
+    if not q.isdigit():
+        m_only = parse_month_token(q)
+        if m_only:
+            return (None, m_only, False)
 
     m = BIRTHDAY_TRIGGER.match(q)
     if not m:
