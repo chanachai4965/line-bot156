@@ -44,7 +44,8 @@ def safe_str(v):
 
 
 def convert(xlsx_path, out_path=None):
-    df = pd.read_excel(xlsx_path)
+    # ---- ชีทแรก: contacts ----
+    df = pd.read_excel(xlsx_path, sheet_name=0)
     df.columns = [c.strip() for c in df.columns]
 
     contacts = []
@@ -65,13 +66,37 @@ def convert(xlsx_path, out_path=None):
             # *** ไม่เก็บฟิลด์ "อายุ" ลง JSON เพื่อความเป็นส่วนตัว ***
         })
 
+    base_dir = os.path.dirname(os.path.abspath(xlsx_path))
     if out_path is None:
-        out_path = os.path.join(os.path.dirname(os.path.abspath(xlsx_path)), "contacts.json")
+        out_path = os.path.join(base_dir, "contacts.json")
 
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(contacts, f, ensure_ascii=False, indent=2)
+    print(f"✅ แปลง contacts {len(contacts)} รายการ → {out_path}")
 
-    print(f"✅ แปลง {len(contacts)} รายการ → {out_path}")
+    # ---- ชีท "คำถาม คำตอบ" → qa.json ----
+    try:
+        qa_df = pd.read_excel(xlsx_path, sheet_name="คำถาม คำตอบ")
+        qa_df.columns = [c.strip() for c in qa_df.columns]
+        qa_list = []
+        for _, row in qa_df.iterrows():
+            q = row.get("คำถาม")
+            a = row.get("คำตอบ")
+            if pd.isna(q) or pd.isna(a):
+                continue
+            q_str = str(q).strip()
+            a_str = str(a).strip()
+            if not q_str or not a_str:
+                continue
+            # คำถามหลายแบบคั่นด้วยคอมมา
+            questions = [x.strip() for x in re.split(r"[,，]", q_str) if x.strip()]
+            qa_list.append({"questions": questions, "answer": a_str})
+        qa_path = os.path.join(base_dir, "qa.json")
+        with open(qa_path, "w", encoding="utf-8") as f:
+            json.dump(qa_list, f, ensure_ascii=False, indent=2)
+        print(f"✅ แปลง Q&A {len(qa_list)} รายการ → {qa_path}")
+    except Exception as e:
+        print(f"⚠️  ข้ามชีท Q&A: {e}")
 
 
 if __name__ == "__main__":
