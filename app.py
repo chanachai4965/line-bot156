@@ -214,6 +214,174 @@ def match_affiliation(contact_aff: str, query: str) -> bool:
     return False
 
 
+# ============================================================
+#  วันเกิด - ค้นหาตามวัน/เดือน
+# ============================================================
+
+THAI_MONTHS_FULL = [
+    "", "มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
+    "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"
+]
+
+# map คำต่างๆ → เลขเดือน 1-12 (รองรับชื่อเต็ม, ตัวย่อ, ตัวเลข)
+THAI_MONTH_MAP = {}
+_short = ["", "ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.",
+          "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."]
+for i in range(1, 13):
+    full = THAI_MONTHS_FULL[i]
+    short = _short[i]
+    for key in [full, short, short.replace(".", ""), str(i), f"{i:02d}"]:
+        THAI_MONTH_MAP[key.lower()] = i
+
+
+def parse_month_token(token: str):
+    """แปลง 'มกราคม'/'ม.ค.'/'1' → 1-12 หรือ None"""
+    if not token:
+        return None
+    t = token.strip().lower()
+    if t in THAI_MONTH_MAP:
+        return THAI_MONTH_MAP[t]
+    # ลองตัด . ออก
+    t2 = t.replace(".", "")
+    if t2 in THAI_MONTH_MAP:
+        return THAI_MONTH_MAP[t2]
+    return None
+
+
+def parse_birthday_field(birthday: str):
+    """แปลง '14 ตุลาคม' → (14, 10) หรือ (None, None)"""
+    if not birthday:
+        return (None, None)
+    parts = birthday.strip().split()
+    if len(parts) < 2:
+        return (None, None)
+    try:
+        day = int(parts[0])
+    except ValueError:
+        return (None, None)
+    month = parse_month_token(" ".join(parts[1:]))
+    return (day, month)
+
+
+# คำ trigger ที่บอกว่ากำลังค้นวันเกิด
+BIRTHDAY_TRIGGER = re.compile(
+    r"^(เกิดวันนี้|วันเกิดวันนี้|เกิด|วันเกิด|เดือนเกิด|เกิดเดือน|เดือน)\s*(.*)$"
+)
+
+
+def parse_birthday_query(query: str):
+    """
+    คืนค่า (day, month, is_today) ถ้าเป็นคำค้นวันเกิด
+    หรือคืน None ถ้าไม่ใช่
+    """
+    q = query.strip()
+    if not q:
+        return None
+
+    # เช็คเป็นชื่อเดือนล้วนๆ ก่อน
+    m_only = parse_month_token(q)
+    if m_only:
+        return (None, m_only, False)
+
+    m = BIRTHDAY_TRIGGER.match(q)
+    if not m:
+        return None
+
+    keyword = m.group(1)
+    rest = m.group(2).strip()
+
+    # "เกิดวันนี้" / "วันเกิดวันนี้"
+    if keyword in ("เกิดวันนี้", "วันเกิดวันนี้"):
+        return (None, None, True)
+
+    if not rest:
+        # "เกิด" / "วันเกิด" เปล่าๆ → วันเกิดวันนี้
+        if keyword in ("เกิด", "วันเกิด"):
+            return (None, None, True)
+        return None
+
+    # parse rest: อาจเป็น "วันนี้" / "เดือน X" / "D" / "D เดือน" / "เดือน"
+    if rest in ("วันนี้", "today"):
+        return (None, None, True)
+
+    # ตัด "เดือน" / "วันที่" ออกถ้ามี
+    rest = re.sub(r"^(เดือน|วันที่)\s*", "", rest).strip()
+
+    # ลองเป็นเดือนล้วน
+    m_month = parse_month_token(rest)
+    if m_month:
+        return (None, m_month, False)
+
+    # ลอง pattern "D เดือน" หรือ "D"
+    tokens = rest.split()
+    day = None
+    month = None
+    if tokens:
+        try:
+            day = int(tokens[0])
+            if not (1 <= day <= 31):
+                day = None
+        except ValueError:
+            day = None
+        if len(tokens) >= 2:
+            month = parse_month_token(" ".join(tokens[1:]))
+
+    if day is None and month is None:
+        return None
+    return (day, month, False)
+
+
+def _today_thai():
+    """คืน (day, month) ของวันนี้ตามเวลาไทย"""
+    from datetime import datetime, timezone, timedelta
+    bkk = datetime.now(timezone(timedelta(hours=7)))
+    return (bkk.day, bkk.month)
+
+
+def search_by_birthday(query: str):
+    """
+    ค้นรายชื่อตามวันเกิด
+    คืน (results, label) ถ้าเป็นคำค้นวันเกิด
+    หรือ None ถ้าไม่ใช่
+    """
+    parsed = parse_birthday_query(query)
+    if parsed is None:
+        return None
+
+    day, month, is_today = parsed
+    if is_today:
+        d, m = _today_thai()
+        day, month = d, m
+        label = f"เกิดวันที่ {d} {THAI_MONTHS_FULL[m]} (วันนี้)"
+    elif day and month:
+        label = f"เกิดวันที่ {day} {THAI_MONTHS_FULL[month]}"
+    elif month and not day:
+        label = f"เกิดเดือน{THAI_MONTHS_FULL[month]}"
+    elif day and not month:
+        label = f"เกิดวันที่ {day} (ทุกเดือน)"
+    else:
+        return None
+
+    results = []
+    for c in CONTACTS:
+        bd_day, bd_month = parse_birthday_field(c.get("birthday", ""))
+        if day is not None and bd_day != day:
+            continue
+        if month is not None and bd_month != month:
+            continue
+        if bd_day is None and bd_month is None:
+            continue
+        results.append(c)
+
+    # เรียงตามวัน (ภายในเดือนเดียว) หรือเรียงตามเดือน-วัน
+    def _sort_key(c):
+        d, m = parse_birthday_field(c.get("birthday", ""))
+        return (m or 99, d or 99)
+    results.sort(key=_sort_key)
+
+    return (results, label)
+
+
 def match_training(contact: dict, query: str) -> bool:
     """ค้นหาการอบรม เช่น 'นรต.' / 'นรต.65' / 'นรต 65' / 'กอน'"""
     training = str(contact.get("training", ""))
@@ -374,6 +542,12 @@ HELP_TEXT = (
     "   หรือพิมพ์  บอท สังกัด บช.น.  ก็ได้\n\n"
     "🎓 หาตามการอบรม:\n"
     "   บอท นรต.  /  บอท นรต.65  /  บอท กอน.\n\n"
+    "🎂 ค้นหาวันเกิด:\n"
+    "   บอท เกิดวันนี้           → ใครเกิดวันนี้\n"
+    "   บอท เกิด มกราคม         → ใครเกิดเดือนมกราคม\n"
+    "   บอท เดือน ตุลาคม         → คนที่เกิดเดือนตุลาคม\n"
+    "   บอท เกิด 14 ตุลาคม      → คนที่เกิด 14 ต.ค.\n"
+    "   บอท เกิด 14              → คนที่เกิดวันที่ 14 (ทุกเดือน)\n\n"
     "💡 Tip: ที่การ์ดมีปุ่ม \"👥 ดูคนสังกัดเดียวกัน\" กดเล่นได้\n\n"
     "พิมพ์  บอท help  เพื่อเปิดเมนูนี้อีกครั้งจ้า ✌️"
 )
@@ -517,6 +691,46 @@ def build_contact_bubble(c: dict) -> BubbleContainer:
     return bubble
 
 
+def build_birthday_message(results, label: str):
+    """สร้างข้อความผลลัพธ์การค้นหาวันเกิด (มี header เป็น label เช่น 'เกิดเดือนตุลาคม')"""
+    if not results:
+        return TextSendMessage(
+            text=f"ไม่มีใครในระบบ{label}เลยอะ 🤔"
+        )
+
+    header = f"🎂 {label} มีทั้งหมด {len(results)} คน"
+
+    # สรุปเป็นข้อความ (ไม่ส่งการ์ดให้รก) - แสดง: ชื่อ, สังกัด, วันเกิด (วัน+เดือน เท่านั้น)
+    lines = [header, ""]
+    for c in results:
+        bd = c.get("birthday", "")
+        lines.append(
+            f"#{c['no']}  {full_name(c)}  ({c.get('nickname','-')})"
+            f"\n     🏢 {c.get('affiliation','')}"
+            f"\n     🎂 {bd}"
+        )
+
+    text_msg = "\n".join(lines)
+    # LINE จำกัด text ~5000 ตัวอักษร — เผื่อไว้ตัดถ้ายาวเกิน
+    if len(text_msg) > 4800:
+        text_msg = text_msg[:4750] + "\n...\n(พิมพ์ #เลขที่ เพื่อดูคนคนนั้นได้)"
+
+    # เพิ่ม Flex carousel ของ 10 คนแรก เพื่อให้ดูการ์ดได้สะดวก
+    LIMIT = 10
+    if len(results) <= LIMIT:
+        bubbles = [build_contact_bubble(c) for c in results]
+    else:
+        bubbles = [build_contact_bubble(c) for c in results[:LIMIT]]
+
+    msgs = [TextSendMessage(text=text_msg)]
+    if bubbles:
+        msgs.append(FlexSendMessage(
+            alt_text=label,
+            contents=CarouselContainer(contents=bubbles),
+        ))
+    return msgs
+
+
 def build_results_message(results, query=""):
     if not results:
         return TextSendMessage(
@@ -636,7 +850,18 @@ def on_text(event):
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=WELCOME))
         return
 
-    # 1) ค้นรายชื่อก่อน (ชื่อ/สังกัด/อบรม) — ข้อมูลจริงสำคัญกว่าคำถามทั่วไป
+    # 1) ค้นวันเกิดก่อน (เกิด/วันเกิด/เดือนเกิด/ชื่อเดือน)
+    bday = search_by_birthday(query)
+    if bday is not None:
+        bday_results, bday_label = bday
+        msg = build_birthday_message(bday_results, bday_label)
+        if isinstance(msg, list):
+            line_bot_api.reply_message(event.reply_token, msg)
+        else:
+            line_bot_api.reply_message(event.reply_token, msg)
+        return
+
+    # 2) ค้นรายชื่อ (ชื่อ/สังกัด/อบรม) — ข้อมูลจริงสำคัญกว่าคำถามทั่วไป
     results = smart_search(query)
     if results:
         msg = build_results_message(results, query=query)
@@ -646,13 +871,13 @@ def on_text(event):
             line_bot_api.reply_message(event.reply_token, msg)
         return
 
-    # 2) ถ้าไม่เจอในรายชื่อ → ลองค้น Q&A (เทียบจากคอลัมน์ "คำถาม" เท่านั้น)
+    # 3) ถ้าไม่เจอในรายชื่อ → ลองค้น Q&A (เทียบจากคอลัมน์ "คำถาม" เท่านั้น)
     qa_answer = search_qa(query)
     if qa_answer:
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=qa_answer))
         return
 
-    # 3) ไม่เจอเลย — ตอบไม่พบ
+    # 4) ไม่เจอเลย — ตอบไม่พบ
     msg = build_results_message([], query=query)
     line_bot_api.reply_message(event.reply_token, msg)
 
