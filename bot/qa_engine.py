@@ -452,10 +452,11 @@ def answer_message(text: str) -> str:
         # กรณีคำตอบมีหลายอันคั่น , (เช่น "159 หมิวคนสวย,แต่จริงๆ 041 ก็สวยครับ")
         return qa_ans.replace(",", "\n")
 
-    # 4.5) ค้นหาตามสังกัด
-    aff_result = search_affiliation(text, _contacts_df)
-    if aff_result:
-        return aff_result
+    # 4.5 ค้นหาตามสังกัด (บช.น., บช.ก., ภ.1-9, ฯลฯ)
+    if is_affiliation_query(text):
+        result = search_affiliation(text, contacts_df)
+        if result:
+            return result
 
 
     # 5) ค้นในรายชื่อบุคคล
