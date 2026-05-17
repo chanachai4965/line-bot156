@@ -293,25 +293,30 @@ def smart_search(query: str):
 WELCOME = (
     "ว่าไงงงงงง 👋\n"
     "หาใครอยู่ ป้อนชื่อ/นามสกุล/ชื่อเล่น/สังกัด/เลขที่ มาเลยจ้า\n"
-    "ไม่ก็พิมพ์  help  เดี๋ยวสอนให้ 😎"
+    "ไม่ก็พิมพ์  บอท help  เดี๋ยวสอนให้ 😎\n\n"
+    "📌 ถ้าอยู่ในกลุ่ม ต้องพิมพ์ \"บอท\" หรือ \"bot\" นำหน้าก่อนนะ\n"
+    "   เช่น  บอท กนกวรรณ  /  bot ภ.8"
 )
 
 HELP_TEXT = (
     "📖 คู่มือใช้งาน (ฉบับลัด สั้น ง่าย)\n"
     "─────────────────\n"
+    "💬 ในกลุ่ม: ต้องพิมพ์ \"บอท\" หรือ \"bot\" นำหน้า\n"
+    "   เช่น  บอท กนกวรรณ  /  bot #1  /  บอท ภ.8\n"
+    "   ในแชทเดี่ยวกับบอท ไม่ต้องเรียก พิมพ์ตรงๆ ได้เลย\n\n"
     "👤 หาคน:\n"
     "   พิมพ์ชื่อ / นามสกุล / ชื่อเล่น ได้เลย\n"
-    "   เช่น  กนกวรรณ  หรือ  มะเหมี่ยว\n\n"
+    "   เช่น  บอท กนกวรรณ  หรือ  บอท มะเหมี่ยว\n\n"
     "🔢 หาด้วยเลขที่:\n"
-    "   พิมพ์  #1  (มี # นำหน้า)\n\n"
+    "   พิมพ์  บอท #1  (มี # นำหน้า)\n\n"
     "🏢 หาตามสังกัด (พิมพ์ได้หลายแบบ):\n"
     "   บช.น. / นครบาล / น. / บชน. → เจอเดียวกัน\n"
     "   ภ.8 / บช.ภ.8 / ภาค8 → เจอเดียวกัน\n"
-    "   หรือพิมพ์  สังกัด บช.น.  ก็ได้\n\n"
+    "   หรือพิมพ์  บอท สังกัด บช.น.  ก็ได้\n\n"
     "🎓 หาตามการอบรม:\n"
-    "   นรต.  /  นรต.65  /  กอน.\n\n"
+    "   บอท นรต.  /  บอท นรต.65  /  บอท กอน.\n\n"
     "💡 Tip: ที่การ์ดมีปุ่ม \"👥 ดูคนสังกัดเดียวกัน\" กดเล่นได้\n\n"
-    "พิมพ์  help  เพื่อเปิดเมนูนี้อีกครั้งจ้า ✌️"
+    "พิมพ์  บอท help  เพื่อเปิดเมนูนี้อีกครั้งจ้า ✌️"
 )
 
 NOT_FOUND_LINES = [
@@ -526,13 +531,44 @@ def callback():
     return "OK"
 
 
+# ในกลุ่ม/ห้อง: ผู้ใช้ต้องพิมพ์ "บอท" หรือ "bot" ขึ้นต้นก่อน บอทถึงจะตอบ
+# ในแชทเดี่ยว: ตอบทุกข้อความ (ไม่ต้องเรียก)
+TRIGGER_PATTERN = re.compile(r"^\s*(บอท|bot)\s*[:：,，]?\s*(.*)$", re.IGNORECASE | re.DOTALL)
+
+
+def extract_query(event_source_type: str, text: str):
+    """
+    คืนค่า query หลังตัดคำเรียกออก หรือ None ถ้าไม่ควรตอบ
+    - 1-on-1 (user): ตอบทุกข้อความ
+    - group/room: ต้องมี 'บอท' หรือ 'bot' นำหน้าเท่านั้น
+    """
+    if event_source_type == "user":
+        return text.strip()
+
+    m = TRIGGER_PATTERN.match(text)
+    if not m:
+        return None  # ไม่เรียกบอท → เงียบ
+    rest = m.group(2).strip()
+    return rest  # อาจเป็น "" ถ้าพิมพ์แค่ "บอท"
+
+
 @handler.add(MessageEvent, message=TextMessage)
 def on_text(event):
     text = (event.message.text or "").strip()
     if not text:
         return
 
-    low = text.lower()
+    source_type = event.source.type  # 'user' | 'group' | 'room'
+    query = extract_query(source_type, text)
+    if query is None:
+        return  # ในกลุ่มที่ไม่ได้เรียก "บอท"/"bot" → เงียบไม่ตอบ
+
+    # ถ้าในกลุ่มเรียก "บอท" เฉยๆ ไม่ระบุคำค้น → แสดงต้อนรับ
+    if not query:
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=WELCOME))
+        return
+
+    low = query.lower()
     if low in {"help", "ช่วยเหลือ", "เมนู", "menu", "/help", "?"}:
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=HELP_TEXT))
         return
@@ -541,8 +577,8 @@ def on_text(event):
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=WELCOME))
         return
 
-    results = smart_search(text)
-    msg = build_results_message(results, query=text)
+    results = smart_search(query)
+    msg = build_results_message(results, query=query)
     if isinstance(msg, list):
         line_bot_api.reply_message(event.reply_token, msg)
     else:
