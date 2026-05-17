@@ -228,7 +228,12 @@ def match_training(contact: dict, query: str) -> bool:
     name_part = m.group(1).strip()
     class_part = m.group(2)
 
-    if loose(name_part) not in loose(training):
+    name_l = loose(name_part)
+    train_l = loose(training)
+    # ป้องกัน empty string match: ถ้า name_part หลัง loose ว่าง → ไม่ match
+    if not name_l or not train_l:
+        return False
+    if name_l not in train_l:
         return False
     if class_part:
         return normalize(class_part) == normalize(klass)
@@ -631,19 +636,25 @@ def on_text(event):
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=WELCOME))
         return
 
-    # 1) ลองค้น Q&A ก่อน (ตรงคำถามใดคำถามหนึ่ง → ตอบจากคอลัมน์คำตอบ)
+    # 1) ค้นรายชื่อก่อน (ชื่อ/สังกัด/อบรม) — ข้อมูลจริงสำคัญกว่าคำถามทั่วไป
+    results = smart_search(query)
+    if results:
+        msg = build_results_message(results, query=query)
+        if isinstance(msg, list):
+            line_bot_api.reply_message(event.reply_token, msg)
+        else:
+            line_bot_api.reply_message(event.reply_token, msg)
+        return
+
+    # 2) ถ้าไม่เจอในรายชื่อ → ลองค้น Q&A (เทียบจากคอลัมน์ "คำถาม" เท่านั้น)
     qa_answer = search_qa(query)
     if qa_answer:
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=qa_answer))
         return
 
-    # 2) ถ้าไม่ตรง Q&A → ค้นข้อมูลผู้ติดต่อ
-    results = smart_search(query)
-    msg = build_results_message(results, query=query)
-    if isinstance(msg, list):
-        line_bot_api.reply_message(event.reply_token, msg)
-    else:
-        line_bot_api.reply_message(event.reply_token, msg)
+    # 3) ไม่เจอเลย — ตอบไม่พบ
+    msg = build_results_message([], query=query)
+    line_bot_api.reply_message(event.reply_token, msg)
 
 
 @handler.add(PostbackEvent)
