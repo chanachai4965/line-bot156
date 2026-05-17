@@ -150,11 +150,12 @@ def match_affiliation(contact_aff: str, query: str) -> bool:
     """
     เทียบสังกัดแบบครอบคลุม (anti-false-positive):
 
-    1) ตัดวงเล็บ (ขึ้นตรง ตร.), (ภาคี) ออกก่อนเทียบ
+    1) ตัดวงเล็บ (ขึ้นตรง ตร.), (ภาคี) ออกก่อนเทียบ (เพื่อค้นชื่อหน่วยปกติ)
     2) Exact match กับ canonical หรือ alias
     3) ถ้า contact มี alias ที่ตรงเป๊ะกับ query → ผ่าน
     4) สำหรับ alias ที่ยาวพอ (>= 5) อนุญาต substring แบบสองทาง
     5) สำหรับ canonical ที่ยาวพอ (>= 4) อนุญาต substring สองทาง
+    6) NEW: เทียบ "tag" ในวงเล็บด้วย → ค้น "ภาคี" / "ขึ้นตรง ตร." ได้
 
     หลีกเลี่ยงการ match ระหว่างสังกัดต่างชนิดที่บังเอิญมีตัวอักษรร่วมกัน
     เช่น "บช.สอท." ต้องไม่ match "บช.ส."
@@ -162,7 +163,10 @@ def match_affiliation(contact_aff: str, query: str) -> bool:
     if not query or not contact_aff:
         return False
 
-    q = loose(query)
+    # ตัด "(" และ ")" ออกจาก query (เก็บเนื้อหาภายในไว้)
+    # เพื่อให้ผู้ใช้พิมพ์ "(ภาคี)" หรือ "(ขึ้นตรง ตร.)" ได้
+    query_cleaned = re.sub(r"[()]", " ", query)
+    q = loose(query_cleaned)
     if not q:
         return False
 
@@ -173,30 +177,39 @@ def match_affiliation(contact_aff: str, query: str) -> bool:
         return True
 
     # 2) เช็ค alias ของ canonical ของ contact นี้
-    matched_canon = None
+    matched_aliases = None
     for canon, aliases in AFFILIATION_ALIASES.items():
         if loose(canon) == a:
-            matched_canon = (canon, aliases)
+            matched_aliases = aliases
             break
 
-    if matched_canon:
-        _, aliases = matched_canon
+    if matched_aliases is not None:
         # 2a) exact match กับ alias ใดๆ
-        for al in aliases:
+        for al in matched_aliases:
             al_l = loose(al)
             if al_l and q == al_l:
                 return True
         # 2b) alias ยาว (>=5) → substring สองทาง
-        for al in aliases:
+        for al in matched_aliases:
             al_l = loose(al)
             if al_l and len(al_l) >= 5 and len(q) >= 5:
                 if q in al_l or al_l in q:
                     return True
-        return False  # มี canonical map แล้ว ไม่ fallback
+    else:
+        # 3) ไม่มี alias map - ใช้ partial match ถ้ายาวพอ (>= 4 ตัว ทั้งสองฝั่ง)
+        if len(a) >= 4 and len(q) >= 4 and (q in a or a in q):
+            return True
 
-    # 3) ไม่มี alias map - ใช้ partial match ถ้ายาวพอ (>= 4 ตัว ทั้งสองฝั่ง)
-    if len(a) >= 4 and len(q) >= 4 and (q in a or a in q):
-        return True
+    # 4) เทียบกับ "tag" ในวงเล็บ เช่น "(ภาคี)", "(ขึ้นตรง ตร.)"
+    #    เพื่อให้ผู้ใช้ค้น "ภาคี" หรือ "ขึ้นตรง ตร." แล้วเจอทุกหน่วยที่มี tag นั้น
+    for tag in re.findall(r"\(([^)]+)\)", contact_aff):
+        tag_l = re.sub(r"[.\s\-_/]+", "", tag).lower()
+        if not tag_l:
+            continue
+        if q == tag_l:
+            return True
+        if len(q) >= 3 and len(tag_l) >= 3 and (q in tag_l or tag_l in q):
+            return True
 
     return False
 
