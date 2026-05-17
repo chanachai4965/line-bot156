@@ -26,7 +26,8 @@ from linebot.models import (
     MessageEvent, TextMessage, TextSendMessage,
     FlexSendMessage, BubbleContainer, CarouselContainer,
     BoxComponent, TextComponent, ImageComponent, SeparatorComponent,
-    URIAction, PostbackAction, PostbackEvent
+    URIAction, PostbackAction, PostbackEvent,
+    JoinEvent
 )
 
 # ---------- Logging ----------
@@ -49,6 +50,8 @@ handler = WebhookHandler(CHANNEL_SECRET)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONTACTS_PATH = os.path.join(BASE_DIR, "contacts.json")
 QA_PATH = os.path.join(BASE_DIR, "qa.json")
+GROUP_IDS_PATH = os.path.join(BASE_DIR, "group_ids.json")
+CRON_SECRET = os.getenv("CRON_SECRET", "")
 
 with open(CONTACTS_PATH, "r", encoding="utf-8") as f:
     CONTACTS = json.load(f)
@@ -588,6 +591,10 @@ HELP_TEXT = (
     "   บอท เดือน ตุลาคม         → คนที่เกิดเดือนตุลาคม\n"
     "   บอท เกิด 14 ตุลาคม      → คนที่เกิด 14 ต.ค.\n"
     "   บอท เกิด 14              → คนที่เกิดวันที่ 14 (ทุกเดือน)\n\n"
+    "🎉 อวยพรวันเกิดอัตโนมัติ (เฉพาะในกลุ่ม):\n"
+    "   เช้า 08:00 น. ทุกวัน บอทจะอวยพร + ขึ้นการ์ดให้\n"
+    "   บอท ลงทะเบียน      → สมัครรับ (กลุ่มที่บอทอยู่จะลงทะเบียนเอง)\n"
+    "   บอท ยกเลิกวันเกิด  → เลิกรับ\n\n"
     "💡 Tip: ที่การ์ดมีปุ่ม \"👥 ดูคนสังกัดเดียวกัน\" กดเล่นได้\n\n"
     "พิมพ์  บอท help  เพื่อเปิดเมนูนี้อีกครั้งจ้า ✌️"
 )
@@ -819,6 +826,123 @@ def build_results_message(results, query=""):
 
 
 # ============================================================
+#  จัดการ Group ID (สำหรับส่งคำอวยพรวันเกิด)
+# ============================================================
+
+def load_group_ids() -> list:
+    """โหลดรายชื่อ group_id ที่บอทอยู่ในกลุ่ม"""
+    if not os.path.exists(GROUP_IDS_PATH):
+        return []
+    try:
+        with open(GROUP_IDS_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            return data
+        return data.get("group_ids", [])
+    except Exception as e:
+        logger.error(f"Error loading group_ids.json: {e}")
+        return []
+
+
+def save_group_ids(ids: list) -> None:
+    """บันทึก group_id (ใช้สำหรับ auto-register; ถ้า Render free tier filesystem
+    ไม่ persist ระหว่าง redeploy แนะนำให้ตั้ง BIRTHDAY_GROUP_IDS ใน env แทน)"""
+    try:
+        with open(GROUP_IDS_PATH, "w", encoding="utf-8") as f:
+            json.dump(ids, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"Error saving group_ids.json: {e}")
+
+
+def add_group_id(group_id: str) -> bool:
+    """เพิ่ม group_id; คืน True ถ้าเป็น id ใหม่"""
+    if not group_id:
+        return False
+    ids = load_group_ids()
+    if group_id in ids:
+        return False
+    ids.append(group_id)
+    save_group_ids(ids)
+    logger.info(f"➕ ลงทะเบียนกลุ่มใหม่: {group_id}")
+    return True
+
+
+def get_birthday_target_groups() -> list:
+    """ดึง group_id ที่จะส่งคำอวยพร
+    ถ้าตั้ง BIRTHDAY_GROUP_IDS ใน env (comma-separated) จะใช้อันนั้นแทน
+    ไม่งั้นใช้รายชื่อที่ auto-register
+    """
+    env = os.getenv("BIRTHDAY_GROUP_IDS", "").strip()
+    if env:
+        return [g.strip() for g in env.split(",") if g.strip()]
+    return load_group_ids()
+
+
+# ============================================================
+#  สร้างคำอวยพรวันเกิด
+# ============================================================
+
+BIRTHDAY_GREETINGS = [
+    "🎂🎉 สุขสันต์วันเกิด {who}! ขอให้สุขภาพแข็งแรง รวยเฮง พลังเต็มทุกวันน้าาาา 💪✨",
+    "🎉🎁 HBD {who}!! วันที่ดีที่สุดของปีเลย ขอให้สมหวังทุกๆ เรื่อง 🎂",
+    "✨🎂 สุขสันต์วันเกิดน้าาาา {who}! ปีนี้ขอให้ปังกว่าทุกปี รวยๆ เฮงๆ 🥳",
+    "🎈🎉 Happy Birthday {who}! ขอให้แข็งแรง ปลอดภัย สุขใจทุกวัน 💗",
+    "🌟🎂 วันเกิดแล้วน้าาา {who} ขอให้เจอแต่สิ่งดีๆ ปังๆ ทั้งงานทั้งใจ ❤️",
+]
+
+
+def _who_str(c: dict) -> str:
+    name = full_name(c)
+    nick = c.get("nickname", "")
+    if nick:
+        return f"{name} ({nick})"
+    return name
+
+
+def build_birthday_announcement(people: list):
+    """
+    สร้างข้อความอวยพรวันเกิดสำหรับคนวันเกิดวันนี้ + การ์ดบุคคล
+    คืน list ของ message (text + flex carousel)
+    """
+    if not people:
+        return []
+
+    d, m = _today_thai()
+    header_lines = [
+        f"🎂🎉 วันเกิดวันนี้ ({d} {THAI_MONTHS_FULL[m]}) 🎉🎂",
+        f"มีทั้งหมด {len(people)} คนน้าาา 🥳",
+        "",
+    ]
+    for p in people:
+        greet = random.choice(BIRTHDAY_GREETINGS).format(who=_who_str(p))
+        header_lines.append(greet)
+        header_lines.append("")
+
+    text_msg = TextSendMessage(text="\n".join(header_lines).strip())
+
+    # การ์ดสูงสุด 10 ใบ (LINE limit)
+    bubbles = [build_contact_bubble(p) for p in people[:10]]
+    msgs = [text_msg]
+    if bubbles:
+        msgs.append(FlexSendMessage(
+            alt_text=f"วันเกิดวันนี้ {len(people)} คน",
+            contents=CarouselContainer(contents=bubbles),
+        ))
+    return msgs
+
+
+def find_birthday_people_today() -> list:
+    """หาคนที่เกิดวันนี้ (ตามเวลาไทย)"""
+    d, m = _today_thai()
+    res = []
+    for c in CONTACTS:
+        bd, bm = parse_birthday_field(c.get("birthday", ""))
+        if bd == d and bm == m:
+            res.append(c)
+    return res
+
+
+# ============================================================
 #  Webhook
 # ============================================================
 
@@ -830,6 +954,85 @@ def index():
 @app.route("/health", methods=["GET"])
 def health():
     return {"status": "ok", "contacts": len(CONTACTS)}, 200
+
+
+@app.route("/cron/birthday", methods=["GET", "POST"])
+def cron_birthday():
+    """
+    Endpoint สำหรับ external cron มาเรียกทุกวัน (เช่น 08:00 น.) เพื่อส่งคำอวยพร
+    ป้องกันด้วย ?token=<CRON_SECRET>
+
+    ตัวอย่างการตั้งค่า cron-job.org:
+      URL: https://<your-app>.onrender.com/cron/birthday?token=<CRON_SECRET>
+      Method: GET
+      Schedule: ทุกวัน 08:00 (Asia/Bangkok)
+    """
+    # ตรวจสอบ token (ถ้าตั้ง CRON_SECRET ใน env ไว้)
+    if CRON_SECRET:
+        token = request.args.get("token", "") or request.headers.get("X-Cron-Token", "")
+        if token != CRON_SECRET:
+            logger.warning("⚠️  /cron/birthday: invalid or missing token")
+            abort(403)
+
+    people = find_birthday_people_today()
+    d, m = _today_thai()
+    today_str = f"{d}/{m}"
+
+    if not people:
+        logger.info(f"🎂 cron/birthday: ไม่มีใครเกิดวันนี้ ({today_str})")
+        return {"status": "no_birthdays", "date": today_str}, 200
+
+    group_ids = get_birthday_target_groups()
+    if not group_ids:
+        logger.warning(f"🎂 มี {len(people)} คนเกิดวันนี้ แต่ยังไม่มีกลุ่มลงทะเบียน")
+        return {
+            "status": "no_groups_registered",
+            "date": today_str,
+            "people": [_who_str(p) for p in people],
+        }, 200
+
+    messages = build_birthday_announcement(people)
+
+    sent, failed = [], []
+    for gid in group_ids:
+        try:
+            line_bot_api.push_message(gid, messages)
+            sent.append(gid)
+            logger.info(f"📤 ส่งคำอวยพรไปยัง group {gid} แล้ว")
+        except Exception as e:
+            logger.error(f"❌ push ไป {gid} ล้มเหลว: {e}")
+            failed.append({"group_id": gid, "error": str(e)})
+
+    return {
+        "status": "ok",
+        "date": today_str,
+        "people_count": len(people),
+        "people": [_who_str(p) for p in people],
+        "sent_groups": len(sent),
+        "failed_groups": len(failed),
+        "failures": failed,
+    }, 200
+
+
+@app.route("/cron/birthday/preview", methods=["GET"])
+def cron_birthday_preview():
+    """Dry-run: ดูว่าวันนี้ใครเกิด + ข้อความที่จะส่ง (ไม่ push จริง)"""
+    if CRON_SECRET:
+        token = request.args.get("token", "")
+        if token != CRON_SECRET:
+            abort(403)
+    people = find_birthday_people_today()
+    d, m = _today_thai()
+    if not people:
+        return {"status": "no_birthdays", "date": f"{d}/{m}"}, 200
+    msgs = build_birthday_announcement(people)
+    return {
+        "status": "preview",
+        "date": f"{d}/{m}",
+        "people": [_who_str(p) for p in people],
+        "text_preview": msgs[0].text if msgs else "",
+        "registered_groups": len(get_birthday_target_groups()),
+    }, 200
 
 
 @app.route("/callback", methods=["POST"])
@@ -890,6 +1093,45 @@ def on_text(event):
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=WELCOME))
         return
 
+    # คำสั่งลงทะเบียน/ดูสถานะกลุ่ม
+    if low in {"ลงทะเบียน", "register", "สมัคร", "สมัครรับวันเกิด"}:
+        if source_type not in ("group", "room"):
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(
+                text="คำสั่งนี้ใช้ในกลุ่มเท่านั้นนะจ๊ะ 😅"
+            ))
+            return
+        gid = (getattr(event.source, "group_id", None)
+               or getattr(event.source, "room_id", None))
+        added = add_group_id(gid)
+        msg = ("ลงทะเบียนกลุ่มเรียบร้อย! 🎉\n"
+               "วันเกิดของคนในระบบ บอทจะส่งคำอวยพรในห้องนี้ทุกเช้า 08:00 น. จ้า 🎂"
+               if added else
+               "กลุ่มนี้ลงทะเบียนไว้แล้วครับ ✓\n"
+               "รอเช้าวันเกิดได้เลยน้า 🎂")
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=msg))
+        return
+
+    if low in {"ยกเลิกวันเกิด", "unregister", "เลิกสมัคร"}:
+        if source_type not in ("group", "room"):
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(
+                text="คำสั่งนี้ใช้ในกลุ่มเท่านั้นนะ"
+            ))
+            return
+        gid = (getattr(event.source, "group_id", None)
+               or getattr(event.source, "room_id", None))
+        ids = load_group_ids()
+        if gid in ids:
+            ids.remove(gid)
+            save_group_ids(ids)
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(
+                text="ยกเลิกการส่งคำอวยพรในกลุ่มนี้แล้วจ้า ✋"
+            ))
+        else:
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(
+                text="กลุ่มนี้ยังไม่เคยลงทะเบียนนะ"
+            ))
+        return
+
     # 1) ค้นวันเกิดก่อน (เกิด/วันเกิด/เดือนเกิด/ชื่อเดือน)
     bday = search_by_birthday(query)
     if bday is not None:
@@ -920,6 +1162,28 @@ def on_text(event):
     # 4) ไม่เจอเลย — ตอบไม่พบ
     msg = build_results_message([], query=query)
     line_bot_api.reply_message(event.reply_token, msg)
+
+
+@handler.add(JoinEvent)
+def on_join(event):
+    """บอทถูกเชิญเข้ากลุ่ม → ลงทะเบียนอัตโนมัติ + ทักทาย"""
+    source_type = event.source.type
+    gid = (getattr(event.source, "group_id", None)
+           or getattr(event.source, "room_id", None))
+    if gid:
+        added = add_group_id(gid)
+        logger.info(f"🤝 JoinEvent: {source_type} {gid} (new={added})")
+
+    line_bot_api.reply_message(event.reply_token, TextSendMessage(
+        text=(
+            "ว่าไง พวกเร้าาาา 👋 บอทมาเป็นเพื่อนแล้ว\n"
+            "─────────────────\n"
+            "🔍 ค้นข้อมูล: พิมพ์ \"บอท ชื่อ/สังกัด/#เลข\"\n"
+            "🎂 วันเกิดของใครในระบบ บอทจะส่งคำอวยพรในห้องนี้\n"
+            "    ทุกเช้า 08:00 น. อัตโนมัติเลยจ้า\n\n"
+            "พิมพ์ \"บอท help\" ดูคู่มือได้น้า ✌️"
+        )
+    ))
 
 
 @handler.add(PostbackEvent)
