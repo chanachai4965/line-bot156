@@ -48,11 +48,20 @@ handler = WebhookHandler(CHANNEL_SECRET)
 # ---------- โหลดข้อมูล ----------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONTACTS_PATH = os.path.join(BASE_DIR, "contacts.json")
+QA_PATH = os.path.join(BASE_DIR, "qa.json")
 
 with open(CONTACTS_PATH, "r", encoding="utf-8") as f:
     CONTACTS = json.load(f)
 
 logger.info(f"📂 โหลดข้อมูล {len(CONTACTS)} รายการ")
+
+# โหลด Q&A (อาจไม่มีไฟล์ก็ได้)
+QA_LIST = []
+if os.path.exists(QA_PATH):
+    with open(QA_PATH, "r", encoding="utf-8") as f:
+        QA_LIST = json.load(f)
+    logger.info(f"💬 โหลด Q&A {len(QA_LIST)} รายการ "
+                f"({sum(len(qa.get('questions',[])) for qa in QA_LIST)} คำถาม)")
 
 
 # ============================================================
@@ -240,6 +249,38 @@ def search_by_affiliation(query: str):
 
 def search_by_training(query: str):
     return [c for c in CONTACTS if match_training(c, query)]
+
+
+def search_qa(query: str):
+    """
+    ค้นหา Q&A: เทียบจากคอลัมน์ 'คำถาม' เท่านั้น (ไม่นำคำตอบมาเทียบ)
+    คืนค่า answer (str) ถ้าเจอ หรือ None ถ้าไม่เจอ
+
+    ลำดับการเทียบ:
+    1) exact match (normalize - ตัดช่องว่าง/lowercase)
+    2) ตรงกันแบบหลวม (loose - ตัดเครื่องหมายวรรคตอนด้วย)
+    """
+    if not QA_LIST:
+        return None
+    q_norm = normalize(query)
+    q_loose = loose(query)
+    if not q_norm:
+        return None
+
+    # 1) exact normalize match
+    for qa in QA_LIST:
+        for q in qa.get("questions", []):
+            if normalize(q) == q_norm:
+                return qa.get("answer", "")
+
+    # 2) loose match (ตัดเครื่องหมายวรรคตอนด้วย)
+    for qa in QA_LIST:
+        for q in qa.get("questions", []):
+            q_l = loose(q)
+            if q_l and q_l == q_loose:
+                return qa.get("answer", "")
+
+    return None
 
 
 def smart_search(query: str):
@@ -577,6 +618,13 @@ def on_text(event):
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=WELCOME))
         return
 
+    # 1) ลองค้น Q&A ก่อน (ตรงคำถามใดคำถามหนึ่ง → ตอบจากคอลัมน์คำตอบ)
+    qa_answer = search_qa(query)
+    if qa_answer:
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=qa_answer))
+        return
+
+    # 2) ถ้าไม่ตรง Q&A → ค้นข้อมูลผู้ติดต่อ
     results = smart_search(query)
     msg = build_results_message(results, query=query)
     if isinstance(msg, list):
