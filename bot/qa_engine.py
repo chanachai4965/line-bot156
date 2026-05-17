@@ -1,3 +1,4 @@
+from .affiliation import is_affiliation_query, search_affiliation
 """สมองของบอท - รับข้อความ, จับคู่ข้อมูล, ส่งคำตอบกลับ"""
 from __future__ import annotations
 
