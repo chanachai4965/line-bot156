@@ -480,6 +480,35 @@ def search_by_training(query: str):
     return [c for c in CONTACTS if match_training(c, query)]
 
 
+def search_by_position(query: str):
+    """
+    ค้นหา 'หน่วยย่อย/พื้นที่' จากฟิลด์ position (สน./สภ./บก./กก./ส.ทล. ฯลฯ)
+    ใช้ substring match แบบหลวม (ตัด .,ช่องว่าง,ขีด ทิ้ง)
+
+    ตัวอย่าง:
+    - 'อุดมสุข'      → 'รอง ผกก.สส.สน.อุดมสุข'
+    - 'สน.ลุมพินี'   → 'รอง ผกก.(สอบสวน) สน.ลุมพินี'
+    - 'ลำพูน'        → 'รอง ผกก.สภ.เมืองลำพูน'
+    - 'ทล.2'         → 'สวญ.ส.ทล.2 กก.2 บก.ทล.'
+
+    หมายเหตุ: ต้องยาวอย่างน้อย 3 ตัวอักษร (หลัง normalize)
+    เพื่อกัน false positive จากคำสั้นๆ
+    """
+    if not query:
+        return []
+    q_loose = loose(query)
+    if len(q_loose) < 3:
+        return []
+    results = []
+    for c in CONTACTS:
+        pos = c.get("position", "")
+        if not pos:
+            continue
+        if q_loose in loose(pos):
+            results.append(c)
+    return results
+
+
 def search_qa(query: str):
     """
     ค้นหา Q&A: เทียบจากคอลัมน์ 'คำถาม' เท่านั้น (ไม่นำคำตอบมาเทียบ)
@@ -542,6 +571,12 @@ def smart_search(query: str):
         add_all(search_by_training(m.group(2)))
         return results
 
+    # "หน่วย ..." / "ตำแหน่ง ..." / "สน. ..." / "สภ. ..." → ค้น position โดยตรง
+    m = re.match(r"^(หน่วย|ตำแหน่ง|position)\s+(.+)$", q, re.IGNORECASE)
+    if m:
+        add_all(search_by_position(m.group(2)))
+        return results
+
     # เลขล้วน → เลขที่
     if q.isdigit():
         add_all(search_by_number(q))
@@ -552,6 +587,11 @@ def smart_search(query: str):
     add_all(search_by_name_or_nick(q))
     add_all(search_by_affiliation(q))
     add_all(search_by_training(q))
+
+    # ค้น position (สน./สภ./ฯลฯ) เฉพาะกรณีที่หาไม่เจอเลย เพื่อกัน substring
+    # ไปชนกับสังกัดอื่นโดยบังเอิญ (เช่น 'บช.ส.' loose='บชส' อาจชน 'บช.สอท.')
+    if not results:
+        add_all(search_by_position(q))
 
     return results
 
@@ -585,6 +625,11 @@ HELP_TEXT = (
     "   หรือพิมพ์  บอท สังกัด บช.น.  ก็ได้\n\n"
     "🎓 หาตามการอบรม:\n"
     "   บอท นรต.  /  บอท นรต.65  /  บอท กอน.\n\n"
+    "📍 หาตามหน่วยย่อย / พื้นที่ (สน./สภ./บก./กก.):\n"
+    "   บอท อุดมสุข        → สน.อุดมสุข\n"
+    "   บอท สน.ลุมพินี     → สน.ลุมพินี\n"
+    "   บอท ลำพูน          → สภ.เมืองลำพูน\n"
+    "   บอท หน่วย ทล.2     → ระบุชัดด้วยคำว่า \"หน่วย\"\n\n"
     "🎂 ค้นหาวันเกิด:\n"
     "   บอท เกิดวันนี้           → ใครเกิดวันนี้\n"
     "   บอท เกิด มกราคม         → ใครเกิดเดือนมกราคม\n"
