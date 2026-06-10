@@ -509,6 +509,135 @@ def search_by_position(query: str):
     return results
 
 
+# ============================================================
+#  ค้นหา "คนเกษียณ" — รองรับเฉพาะปี พ.ศ. 2569-2575
+#  (ปีเกษียณเป็นข้อมูลสาธารณะ ไม่ใช่ความลับเหมือนปีเกิด/อายุ)
+# ============================================================
+
+RETIREMENT_MIN_YEAR = 2569
+RETIREMENT_MAX_YEAR = 2575
+
+# คำ trigger สำหรับค้นปีเกษียณ
+RETIREMENT_TRIGGER = re.compile(
+    r"^(เกษียณ|รีไทร์|retire|retirement)\s*(.*)$",
+    re.IGNORECASE,
+)
+
+
+def parse_retirement_query(query: str):
+    """
+    คืนค่า (year_from, year_to) ถ้าเป็นคำค้นปีเกษียณ หรือคืน None ถ้าไม่ใช่
+    รองรับรูปแบบ:
+      - "เกษียณ"                → คืน (2569, 2575)  ทั้งช่วง default
+      - "เกษียณ 2569"           → คืน (2569, 2569)
+      - "เกษียณ 2569-2575"      → คืน (2569, 2575)
+      - "เกษียณ 2569 - 2575"    → คืน (2569, 2575)
+      - "เกษียณ 2569 ถึง 2575"  → คืน (2569, 2575)
+      - "เกษียณปี 2570"          → คืน (2570, 2570)
+
+    จะคืน None ถ้าปีนอกช่วงที่อนุญาต (2569-2575)
+    """
+    q = query.strip()
+    m = RETIREMENT_TRIGGER.match(q)
+    if not m:
+        return None
+
+    rest = m.group(2).strip()
+    # ตัดคำว่า "ปี" / "ในปี" / "year" ออก
+    rest = re.sub(r"^(ปี|ในปี|year)\s*", "", rest, flags=re.IGNORECASE).strip()
+
+    # ไม่ระบุปี → ค้นทั้งช่วง default
+    if not rest:
+        return (RETIREMENT_MIN_YEAR, RETIREMENT_MAX_YEAR)
+
+    # ค้นหาเลข 4 หลักทั้งหมดในส่วน rest
+    nums = re.findall(r"\d{4}", rest)
+    if not nums:
+        return None
+
+    try:
+        years = [int(n) for n in nums[:2]]
+    except ValueError:
+        return None
+
+    if len(years) == 1:
+        y = years[0]
+        if not (RETIREMENT_MIN_YEAR <= y <= RETIREMENT_MAX_YEAR):
+            return ("OUT_OF_RANGE", y)
+        return (y, y)
+
+    # สองตัว → ช่วง
+    y1, y2 = years[0], years[1]
+    if y1 > y2:
+        y1, y2 = y2, y1
+    # clip ให้อยู่ในช่วง 2569-2575
+    if y2 < RETIREMENT_MIN_YEAR or y1 > RETIREMENT_MAX_YEAR:
+        return ("OUT_OF_RANGE", (y1, y2))
+    y1 = max(y1, RETIREMENT_MIN_YEAR)
+    y2 = min(y2, RETIREMENT_MAX_YEAR)
+    return (y1, y2)
+
+
+def search_by_retirement(year_from: int, year_to: int):
+    """
+    คืนรายชื่อคนที่เกษียณในช่วงปี [year_from, year_to] (พ.ศ.)
+    เรียงตาม retirement_year ก่อน แล้วตามด้วยเลขที่
+    """
+    results = []
+    for c in CONTACTS:
+        ry = c.get("retirement_year")
+        if isinstance(ry, int) and year_from <= ry <= year_to:
+            results.append(c)
+    results.sort(key=lambda x: (x.get("retirement_year") or 9999, x.get("no", 0)))
+    return results
+
+
+def build_retirement_message(results, year_from: int, year_to: int):
+    """สร้างข้อความผลค้นหาคนเกษียณ — เป็น text สรุป + card carousel 10 คนแรก"""
+    if year_from == year_to:
+        label = f"เกษียณ ปี {year_from}"
+    else:
+        label = f"เกษียณ ปี {year_from}-{year_to}"
+
+    if not results:
+        return TextSendMessage(
+            text=f"ไม่มีใครในระบบ{label}เลยอะ 🤔"
+        )
+
+    header = f"🎖️ {label} มีทั้งหมด {len(results)} คน"
+    lines = [header, ""]
+
+    # จัดกลุ่มตามปี เพื่ออ่านง่าย
+    by_year = {}
+    for c in results:
+        ry = c.get("retirement_year")
+        by_year.setdefault(ry, []).append(c)
+
+    for y in sorted(by_year.keys()):
+        lines.append(f"━━ ปี {y} ({len(by_year[y])} คน) ━━")
+        for c in by_year[y]:
+            lines.append(
+                f"#{c['no']}  {full_name(c)}  ({c.get('nickname','-')})"
+                f"\n     🏢 {c.get('affiliation','')}"
+            )
+        lines.append("")
+
+    text_msg = "\n".join(lines).rstrip()
+    if len(text_msg) > 4800:
+        text_msg = text_msg[:4750] + "\n...\n(พิมพ์ #เลขที่ เพื่อดูคนคนนั้นได้)"
+
+    LIMIT = 10
+    bubbles = [build_contact_bubble(c) for c in results[:LIMIT]]
+
+    msgs = [TextSendMessage(text=text_msg)]
+    if bubbles:
+        msgs.append(FlexSendMessage(
+            alt_text=label,
+            contents=CarouselContainer(contents=bubbles),
+        ))
+    return msgs
+
+
 def search_qa(query: str):
     """
     ค้นหา Q&A: เทียบจากคอลัมน์ 'คำถาม' เท่านั้น (ไม่นำคำตอบมาเทียบ)
@@ -636,6 +765,10 @@ HELP_TEXT = (
     "   บอท เดือน ตุลาคม         → คนที่เกิดเดือนตุลาคม\n"
     "   บอท เกิด 14 ตุลาคม      → คนที่เกิด 14 ต.ค.\n"
     "   บอท เกิด 14              → คนที่เกิดวันที่ 14 (ทุกเดือน)\n\n"
+    "🎖️ ค้นหาคนเกษียณ (เฉพาะปี พ.ศ. 2569-2575):\n"
+    "   บอท เกษียณ                → ทุกคนที่จะเกษียณในช่วง 2569-2575\n"
+    "   บอท เกษียณ 2569           → คนที่เกษียณปี 2569\n"
+    "   บอท เกษียณ 2569-2575      → ช่วงปีเกษียณ\n\n"
     "🎉 อวยพรวันเกิดอัตโนมัติ (เฉพาะในกลุ่ม):\n"
     "   เช้า 08:00 น. ทุกวัน บอทจะอวยพร + ขึ้นการ์ดให้\n"
     "   บอท ลงทะเบียน      → สมัครรับ (กลุ่มที่บอทอยู่จะลงทะเบียนเอง)\n"
@@ -716,6 +849,10 @@ def build_contact_bubble(c: dict) -> BubbleContainer:
     if c.get("training_class"):
         training_full = f"{training_full} รุ่น {c.get('training_class')}".strip()
     add_row("🎓", "การอบรม", training_full)
+    # แสดง "ปีเกษียณ" เฉพาะคนที่จะเกษียณภายใน 2569-2575 (ตามที่ผู้ใช้ขอ)
+    ry = c.get("retirement_year")
+    if isinstance(ry, int) and RETIREMENT_MIN_YEAR <= ry <= RETIREMENT_MAX_YEAR:
+        add_row("🎖️", "ปีเกษียณ", f"พ.ศ. {ry}")
 
     image_url = safe_image(c.get("image_url", ""))
 
@@ -1182,6 +1319,27 @@ def on_text(event):
     if bday is not None:
         bday_results, bday_label = bday
         msg = build_birthday_message(bday_results, bday_label)
+        if isinstance(msg, list):
+            line_bot_api.reply_message(event.reply_token, msg)
+        else:
+            line_bot_api.reply_message(event.reply_token, msg)
+        return
+
+    # 1.5) ค้นปีเกษียณ (เกษียณ/เกษียณ 2569/เกษียณ 2569-2575)
+    ret = parse_retirement_query(query)
+    if ret is not None:
+        # นอกช่วงที่อนุญาต
+        if ret[0] == "OUT_OF_RANGE":
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(
+                text=(
+                    f"ค้นปีเกษียณได้เฉพาะช่วง พ.ศ. {RETIREMENT_MIN_YEAR}-{RETIREMENT_MAX_YEAR} เท่านั้นนะ 🙏\n"
+                    "ลองใหม่: บอท เกษียณ 2569  /  บอท เกษียณ 2569-2575"
+                )
+            ))
+            return
+        y1, y2 = ret
+        ret_results = search_by_retirement(y1, y2)
+        msg = build_retirement_message(ret_results, y1, y2)
         if isinstance(msg, list):
             line_bot_api.reply_message(event.reply_token, msg)
         else:
