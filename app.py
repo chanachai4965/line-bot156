@@ -849,10 +849,7 @@ def build_contact_bubble(c: dict) -> BubbleContainer:
     if c.get("training_class"):
         training_full = f"{training_full} รุ่น {c.get('training_class')}".strip()
     add_row("🎓", "การอบรม", training_full)
-    # แสดง "ปีเกษียณ" เฉพาะคนที่จะเกษียณภายใน 2569-2575 (ตามที่ผู้ใช้ขอ)
-    ry = c.get("retirement_year")
-    if isinstance(ry, int) and RETIREMENT_MIN_YEAR <= ry <= RETIREMENT_MAX_YEAR:
-        add_row("🎖️", "ปีเกษียณ", f"พ.ศ. {ry}")
+    # *** ไม่แสดงปีเกษียณบนการ์ดบุคคล — ใช้ภายในสำหรับฟังก์ชันค้นหาเท่านั้น ***
 
     image_url = safe_image(c.get("image_url", ""))
 
