@@ -7,6 +7,8 @@
 ความสำคัญ:
 - จะ "ตัดปีเกิด" และ "ไม่เก็บอายุ" ในผลลัพธ์ JSON
 - เพื่อให้บอทไม่สามารถเปิดเผยปีเกิด/อายุได้
+- คำนวณ "ปีเกษียณ" (พ.ศ.) จากวันเดือนปีเกิด ตามระเบียบราชการไทย
+  (เกษียณ 30 ก.ย. ของปีงบประมาณที่อายุ 60 ปีบริบูรณ์)
 """
 
 import sys
@@ -15,6 +17,44 @@ import re
 import json
 
 import pandas as pd
+
+THAI_MONTHS = {
+    "มกราคม": 1, "กุมภาพันธ์": 2, "มีนาคม": 3, "เมษายน": 4, "พฤษภาคม": 5,
+    "มิถุนายน": 6, "กรกฎาคม": 7, "สิงหาคม": 8, "กันยายน": 9,
+    "ตุลาคม": 10, "พฤศจิกายน": 11, "ธันวาคม": 12,
+}
+
+
+def parse_thai_date(s):
+    """แปลง '14 ตุลาคม 2530' → (14, 10, 2530) หรือ (None, None, None)"""
+    if pd.isna(s):
+        return (None, None, None)
+    s = str(s).strip()
+    m = re.match(r"^\s*(\d{1,2})\s+([ก-๙]+)\s+(\d{4})\s*$", s)
+    if not m:
+        return (None, None, None)
+    day = int(m.group(1))
+    month_name = m.group(2)
+    year_be = int(m.group(3))  # ปี พ.ศ.
+    month = THAI_MONTHS.get(month_name)
+    if not month:
+        return (None, None, None)
+    return (day, month, year_be)
+
+
+def calc_retirement_year(day, month, year_be):
+    """
+    คำนวณปีเกษียณ (พ.ศ.) ตามระเบียบราชการไทย
+    - เกษียณ 30 ก.ย. ของปีงบประมาณที่อายุ 60 ปีบริบูรณ์
+    - ปีงบประมาณไทย: 1 ต.ค. – 30 ก.ย.
+    - ถ้าเกิดวันที่ 1 ต.ค. ขึ้นไป → เกษียณปี (พ.ศ.เกิด + 61)
+    - ถ้าเกิด 30 ก.ย. หรือก่อนหน้า → เกษียณปี (พ.ศ.เกิด + 60)
+    """
+    if not day or not month or not year_be:
+        return None
+    if month >= 10:  # ต.ค. (10), พ.ย. (11), ธ.ค. (12) → ปีงบประมาณถัดไป
+        return year_be + 61
+    return year_be + 60
 
 
 def strip_year(s):
@@ -50,6 +90,9 @@ def convert(xlsx_path, out_path=None):
 
     contacts = []
     for _, row in df.iterrows():
+        bday_raw = row.get("วันเดือนปีเกิด")
+        _d, _m, _y = parse_thai_date(bday_raw)
+        retirement_year = calc_retirement_year(_d, _m, _y)
         contacts.append({
             "no": int(row["เลขที่"]) if not pd.isna(row.get("เลขที่")) else 0,
             "affiliation": safe_str(row.get("สังกัด")),
@@ -63,6 +106,7 @@ def convert(xlsx_path, out_path=None):
             "training": safe_str(row.get("การอบรม")),
             "training_class": safe_str(row.get("รุ่นที่อบรม")),
             "image_url": gdrive_to_direct(row.get("รูปภาพ")),
+            "retirement_year": retirement_year,  # ✅ ปีเกษียณ (พ.ศ.) — ข้อมูลสาธารณะ
             # *** ไม่เก็บฟิลด์ "อายุ" ลง JSON เพื่อความเป็นส่วนตัว ***
         })
 
