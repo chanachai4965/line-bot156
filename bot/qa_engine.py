@@ -441,7 +441,12 @@ def answer_message(text: str) -> str:
         return _list_committee()
     if any(k in m for k in STAFF_KEYWORDS):
         return _list_staff()
-
+    # 3.4.5 ค้นหาคนเกษียณตามปี พ.ศ.
+    if is_retirement_query(text):
+        result = search_retirement(text, contacts_df)
+        if result:
+            return result
+    
     # 3.5) คำถามเกี่ยวกับวันเกิด/เดือนเกิด (ตัดปีออกเสมอ)
     birth_ans = _handle_birth_query(text)
     if birth_ans is not None:
