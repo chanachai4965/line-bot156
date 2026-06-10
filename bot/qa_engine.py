@@ -10,6 +10,7 @@ import pandas as pd
 
 from .data_loader import load_all_excels, get_contacts_df, get_qa_df
 from .birthday import parse_birth, format_day_month, detect_month_in_query, THAI_MONTHS_FULL
+from .retirement import is_retirement_query, search_retirement
 from .affiliation import search_affiliation
 from .responses import (
     AGE_REFUSALS,
